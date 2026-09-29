@@ -6,7 +6,10 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.errors import AppError
 from app.limiter import limiter
+from app.logging_config import setup_logging
 from app.routers import auth, bookings, centres, payments, tests
+
+setup_logging()
 
 app = FastAPI(
     title="EVE Diagnostic Booking API",

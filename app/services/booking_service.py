@@ -1,11 +1,19 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import Booking, BookingStatus, CentreTest, DiagnosticCentre, DiagnosticTest
+from app.models import (
+    Booking,
+    BookingStatus,
+    CentreTest,
+    DiagnosticCentre,
+    DiagnosticTest,
+    Payment,
+    PaymentStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +82,26 @@ def get_user_booking(db: Session, booking_id: int, user_id: int) -> Booking:
     if booking is None or booking.user_id != user_id:
         raise AppError(404, "Booking not found")
     return booking
+
+
+def expire_stale_bookings(db: Session, older_than_minutes: int) -> int:
+    """Cancel bookings that stayed PENDING too long. Returns how many were cancelled."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)
+    waiting_for_provider = select(Payment.booking_id).where(
+        Payment.status == PaymentStatus.PENDING
+    )
+    stale = db.scalars(
+        select(Booking).where(
+            Booking.status == BookingStatus.PENDING,
+            Booking.created_at < cutoff,
+            Booking.id.not_in(waiting_for_provider),  # a payment is still in flight
+        )
+    ).all()
+
+    for booking in stale:
+        change_status(booking, BookingStatus.CANCELLED)
+    db.commit()
+    return len(stale)
 
 
 def cancel_booking(db: Session, booking_id: int, user_id: int) -> Booking:
