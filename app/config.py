@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://eve:eve@localhost:5432/eve"
     redis_url: str = "redis://localhost:6379/0"
 
-    secret_key: str = "dev-secret-change-me"
+    secret_key: str = "dev-secret-change-me-please-use-a-long-key"
     access_token_expire_minutes: int = 60
 
     # shared secret used to sign webhook bodies
