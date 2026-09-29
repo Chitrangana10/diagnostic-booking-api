@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import models  # noqa: F401
+from app import cache, models  # noqa: F401
 from app.database import Base, get_db
 from app.limiter import limiter
 from app.main import app
@@ -27,6 +27,7 @@ limiter.enabled = False
 def fresh_tables():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
+    cache.delete_prefix("centres:")  # cached pages from an earlier test would be stale
     yield
 
 

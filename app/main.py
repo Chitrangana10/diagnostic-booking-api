@@ -4,7 +4,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.limiter import limiter
-from app.routers import auth
+from app.routers import auth, centres, tests
 
 app = FastAPI(
     title="EVE Diagnostic Booking API",
@@ -16,6 +16,8 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 app.include_router(auth.router)
+app.include_router(centres.router)
+app.include_router(tests.router)
 
 
 @app.get("/health", tags=["health"])
