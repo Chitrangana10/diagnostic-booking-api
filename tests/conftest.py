@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +10,7 @@ from app import cache, models  # noqa: F401
 from app.database import Base, get_db
 from app.limiter import limiter
 from app.main import app
-from app.models import User
+from app.models import CentreTest, DiagnosticCentre, DiagnosticTest, User
 from app.security import hash_password
 
 # tests use their own database so they never touch real data
@@ -82,3 +83,15 @@ def admin_headers(client, db):
         "/auth/login", json={"email": "admin@example.com", "password": "password123"}
     )
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+@pytest.fixture
+def offer(db):
+    """A centre that offers one test at 500.00."""
+    centre = DiagnosticCentre(name="City Lab", location="Delhi")
+    test = DiagnosticTest(name="CBC")
+    db.add_all([centre, test])
+    db.flush()
+    db.add(CentreTest(centre_id=centre.id, test_id=test.id, price=Decimal("500.00")))
+    db.commit()
+    return {"centre_id": centre.id, "test_id": test.id, "price": "500.00"}
