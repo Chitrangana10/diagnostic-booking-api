@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     # shared secret used to sign webhook bodies
     webhook_secret: str = "dev-webhook-secret"
 
+    # chance that the fake payment succeeds when the caller doesn't force a result
+    payment_success_rate: float = 0.8
+
     # pending bookings older than this get cancelled by the background job
     pending_booking_minutes: int = 30
 

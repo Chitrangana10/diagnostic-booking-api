@@ -6,7 +6,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.errors import AppError
 from app.limiter import limiter
-from app.routers import auth, bookings, centres, tests
+from app.routers import auth, bookings, centres, payments, tests
 
 app = FastAPI(
     title="EVE Diagnostic Booking API",
@@ -26,6 +26,7 @@ def handle_app_error(request: Request, exc: AppError):
 app.include_router(auth.router)
 app.include_router(bookings.router)
 app.include_router(centres.router)
+app.include_router(payments.router)
 app.include_router(tests.router)
 
 
