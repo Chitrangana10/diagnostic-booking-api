@@ -16,6 +16,8 @@ class WebhookEvent(Base):
     payload: Mapped[dict] = mapped_column(JSON)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # when the retry job may try this event again (grows after each failed attempt)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

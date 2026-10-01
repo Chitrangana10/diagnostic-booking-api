@@ -136,7 +136,8 @@ def test_retry_job_finishes_event_once_payment_exists(client, user_headers, offe
     payment.provider_ref = "late-ref"
     db.commit()
 
-    finished = webhook_service.retry_unprocessed(db)
+    later = datetime.now(timezone.utc) + timedelta(hours=1)
+    finished = webhook_service.retry_unprocessed(db, now=later)
 
     assert finished == 1
     assert booking_status(db, booking_id) == BookingStatus.CONFIRMED
@@ -145,8 +146,9 @@ def test_retry_job_finishes_event_once_payment_exists(client, user_headers, offe
 
 def test_retry_job_gives_up_after_max_attempts(client, db):
     send_webhook(client, "evt_1", "never-exists", "SUCCESS")
+    far_future = datetime.now(timezone.utc) + timedelta(days=1)
     for _ in range(10):
-        webhook_service.retry_unprocessed(db)
+        webhook_service.retry_unprocessed(db, now=far_future)
 
     assert db.query(WebhookEvent).one().attempts == webhook_service.MAX_ATTEMPTS
 
@@ -174,3 +176,30 @@ def test_parallel_duplicate_webhooks_apply_once(client, user_headers, offer, db)
     assert booking_status(db, booking_id) == BookingStatus.CONFIRMED
     assert db.query(WebhookEvent).count() == 1
     assert db.query(Payment).count() == 1
+
+
+def test_backoff_doubles_and_is_capped():
+    assert webhook_service.backoff_seconds(1) == 30
+    assert webhook_service.backoff_seconds(2) == 60
+    assert webhook_service.backoff_seconds(3) == 120
+    assert webhook_service.backoff_seconds(4) == 240
+    assert webhook_service.backoff_seconds(20) == webhook_service.MAX_DELAY_SECONDS
+
+
+def test_failed_event_is_not_retried_before_its_time(client, db):
+    send_webhook(client, "evt_1", "no-such-payment", "SUCCESS")
+    event = db.query(WebhookEvent).one()
+    assert event.next_retry_at > datetime.now(timezone.utc)
+
+    # the job runs right away: the event is not due yet, so it is left alone
+    webhook_service.retry_unprocessed(db)
+    db.expire_all()
+    assert db.query(WebhookEvent).one().attempts == 1
+
+    # once its time has passed, the job tries again, and the next wait is twice as long
+    webhook_service.retry_unprocessed(db, now=event.next_retry_at + timedelta(seconds=1))
+    db.expire_all()
+    event = db.query(WebhookEvent).one()
+    assert event.attempts == 2
+    wait = (event.next_retry_at - datetime.now(timezone.utc)).total_seconds()
+    assert 55 < wait <= 60

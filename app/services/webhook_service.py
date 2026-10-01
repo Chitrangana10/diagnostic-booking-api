@@ -1,8 +1,9 @@
 import hashlib
 import hmac
 import logging
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,13 @@ from app.services import payment_service
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5
+BASE_DELAY_SECONDS = 30
+MAX_DELAY_SECONDS = 3600
+
+
+def backoff_seconds(attempts: int) -> int:
+    """Wait time after a failed attempt: 30s, 60s, 120s, 240s... (doubles, capped at 1 hour)."""
+    return min(BASE_DELAY_SECONDS * 2 ** (attempts - 1), MAX_DELAY_SECONDS)
 
 
 def compute_signature(body: bytes) -> str:
@@ -36,7 +44,9 @@ def process_event(db: Session, event: WebhookEvent) -> str:
         .with_for_update()
     )
     if payment is None:
-        db.commit()  # keep the attempt count
+        delay = backoff_seconds(event.attempts)
+        event.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        db.commit()  # keep the attempt count and the retry time
         raise AppError(404, "Unknown payment")
 
     applied = payment_service.apply_result(
@@ -65,11 +75,17 @@ def handle_webhook(db: Session, event_id: str, payload: dict) -> str:
     return process_event(db, event)
 
 
-def retry_unprocessed(db: Session) -> int:
-    """Used by the background job: re-run events that failed earlier. Returns how many finished."""
+def retry_unprocessed(db: Session, now: datetime | None = None) -> int:
+    """Used by the background job: re-run events that failed earlier and are due again.
+
+    Returns how many finished.
+    """
+    now = now or datetime.now(timezone.utc)
     events = db.scalars(
         select(WebhookEvent).where(
-            WebhookEvent.processed.is_(False), WebhookEvent.attempts < MAX_ATTEMPTS
+            WebhookEvent.processed.is_(False),
+            WebhookEvent.attempts < MAX_ATTEMPTS,
+            or_(WebhookEvent.next_retry_at.is_(None), WebhookEvent.next_retry_at <= now),
         )
     ).all()
 
