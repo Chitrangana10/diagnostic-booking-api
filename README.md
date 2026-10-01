@@ -1,226 +1,220 @@
-# EVE Diagnostic Booking API
+# Diagnostic Booking API
 
-A backend service where patients book diagnostic tests at labs and pay for them. Payments are
-simulated (no real gateway). Built with **FastAPI, PostgreSQL, SQLAlchemy, Redis and Celery**.
+A backend for booking diagnostic tests (blood tests, scans, etc.) at labs and paying for them.
+Payments are simulated, there is no real payment gateway.
+
+Built with Python, FastAPI, PostgreSQL, Redis and Celery.
+
+How the code is organised and how a request flows through it: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+## What it does
+
+- Sign up, log in, log out. Login uses JWT tokens (short access token + refresh token).
+- Labs ("centres") offer tests, and each lab sets its own price for each test.
+- A logged-in user books a test at a lab for a date and time.
+- A fake payment endpoint pays for the booking (SUCCESS or FAILED) and updates the booking.
+- A webhook endpoint takes payment updates from the "payment provider". Sending the same
+  event twice does nothing the second time.
 
 ## Run it
 
-### With Docker (easiest)
+You need Docker Desktop.
 
 ```bash
-docker compose up --build
-docker compose exec api python -m app.seed     # sample centres, tests and an admin user
+docker compose up --build -d
+docker compose exec api python -m app.seed
 ```
 
-- API: http://localhost:8000
-- Swagger docs: http://localhost:8000/docs (click **Authorize** and paste the token from `/auth/login`)
-- Admin login created by the seed: `admin@eve.com` / `admin12345`
+- API docs (Swagger): http://localhost:8000/docs
+- Admin login created by the seed: `admin@eve.com` / `admin12345` (demo values, change them for anything real)
 
-Docker starts five containers: `api`, `worker` and `beat` (Celery), `db` (Postgres), `redis`.
-The api container runs the Alembic migrations on start.
+`docker compose down` stops everything. Add `-v` to also delete the database.
 
-### Locally (without Docker for the app)
+The seed adds 3 labs, 4 tests with prices, and the admin user. It is safe to run twice.
+
+### Run without Docker for the app
+
+Only the database and Redis run in Docker. The app runs on your machine.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate          # Windows (Git Bash): source .venv/Scripts/activate
 pip install -r requirements.txt
 cp .env.example .env
-docker compose up -d db redis                          # just the database and redis
+docker compose up -d db redis
 alembic upgrade head
 python -m app.seed
 uvicorn app.main:app --reload
 ```
 
-Optional, for the background jobs: `celery -A app.tasks.celery_app worker --beat --loglevel=info`
+## Run the tests
 
-### Tests
-
-Tests use a separate Postgres database called `eve_test`, so they never touch real data.
+The tests use their own database (`eve_test`), so they never touch your real data.
 
 ```bash
 docker compose up -d db redis
-docker compose exec db psql -U eve -d postgres -c "CREATE DATABASE eve_test;"   # only once
+docker compose exec db psql -U eve -d postgres -c "CREATE DATABASE eve_test;"   # first time only
 pytest
 ```
 
-## How the code is organised
-
-```
-app/
-  routers/    HTTP only: read the request, call a service, return the response
-  services/   business rules (booking state machine, payments, webhook)
-  models/     database tables
-  schemas/    request / response shapes and validation (pydantic)
-  tasks/      Celery jobs
-  security.py, dependencies.py   password hashing, JWT, "who is the current user"
-  cache.py, limiter.py, logging_config.py
-tests/
-alembic/      database migrations
-```
-
-Routers never contain business logic. Services raise `AppError(status, message)` when a rule is
-broken, and `main.py` turns that into the HTTP response.
-
-## API
-
-| Method | Path | Who | What |
-|---|---|---|---|
-| POST | `/auth/signup` | anyone | create an account |
-| POST | `/auth/login` | anyone | get a JWT |
-| GET | `/centres/` | anyone | list centres with their tests and prices (`page`, `size`, `location`) |
-| GET | `/centres/{id}` | anyone | one centre |
-| POST | `/centres/` | admin | create a centre |
-| POST | `/centres/{id}/tests` | admin | make a centre offer a test at a price |
-| PUT | `/centres/{id}/tests/{test_id}` | admin | change that price |
-| GET | `/tests/` | anyone | list tests |
-| POST | `/tests/` | admin | create a test |
-| POST | `/bookings/` | user | book a test |
-| GET | `/bookings/` | user | my bookings (`status`, `page`, `size`) |
-| GET | `/bookings/{id}` | user | one of my bookings |
-| POST | `/bookings/{id}/cancel` | user | cancel my booking |
-| POST | `/payments/` | user | pay for a booking (simulated) |
-| POST | `/payments/webhook/` | payment provider | payment status update, signed |
-
-### Example requests
+Useful variations:
 
 ```bash
-# sign up and log in
+pytest -v                                   # show every test name
+pytest tests/test_webhook.py                # one file
+pytest -k duplicate                         # tests with "duplicate" in the name
+```
+
+## Try it by hand
+
+Open http://localhost:8000/docs. To call protected endpoints, log in first, copy the
+`access_token`, click **Authorize** and paste it.
+
+Or with curl (Git Bash):
+
+```bash
+# 1. sign up and log in
 curl -X POST localhost:8000/auth/signup -H 'Content-Type: application/json' \
   -d '{"name":"Riya","email":"riya@example.com","password":"password123"}'
+
 curl -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
   -d '{"email":"riya@example.com","password":"password123"}'
-# -> {"access_token":"<TOKEN>","token_type":"bearer"}
+# copy the access_token from the answer
+TOKEN=paste_the_access_token_here
 
-# see centres
+# 2. see the labs
 curl localhost:8000/centres/
 
-# book test 1 at centre 1 (time must include a timezone and be in the future)
-curl -X POST localhost:8000/bookings/ -H "Authorization: Bearer <TOKEN>" \
+# 3. book test 1 at lab 1 (the time needs a timezone and must be in the future)
+curl -X POST localhost:8000/bookings/ -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"test_id":1,"centre_id":1,"appointment_time":"2027-01-20T10:00:00+05:30"}'
 
-# pay. "simulate" is optional: leave it out for a random result (80% success)
-curl -X POST localhost:8000/payments/ -H "Authorization: Bearer <TOKEN>" \
+# 4. pay for booking 1. "simulate" is optional, leave it out for a random result
+curl -X POST localhost:8000/payments/ -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"booking_id":1,"simulate":"SUCCESS"}'
 ```
 
-### The webhook
+### Trying the webhook
 
-The provider sends `{"event_id": "...", "provider_ref": "...", "status": "SUCCESS" | "FAILED"}`.
-`provider_ref` is the id returned when the payment was created. The body must be signed:
-header `X-Signature` = hex HMAC-SHA256 of the raw body using `WEBHOOK_SECRET`.
+The provider sends a JSON body and signs it. The signature goes in the `X-Signature` header:
+an HMAC-SHA256 of the exact body, using `WEBHOOK_SECRET` as the key.
+
+Take the `provider_ref` from the payment response in step 4 and use it here:
 
 ```bash
-BODY='{"event_id":"evt_1","provider_ref":"<PROVIDER_REF>","status":"SUCCESS"}'
+REF=paste_the_provider_ref_here
+BODY='{"event_id":"evt_1","provider_ref":"'$REF'","status":"FAILED"}'
 SIG=$(python -c "import hmac,hashlib,sys;print(hmac.new(b'change-me-webhook-secret',sys.argv[1].encode(),hashlib.sha256).hexdigest())" "$BODY")
 curl -X POST localhost:8000/payments/webhook/ -H "X-Signature: $SIG" -d "$BODY"
 ```
 
-Response is `{"result": "processed"}` the first time, `"duplicate"` if the same `event_id` comes
-again, and `"ignored"` if it is a new event for a payment that is already finished.
+What you get back:
 
-## Database design
+| Answer | Meaning |
+|---|---|
+| `{"result":"processed"}` | the payment was waiting and has now been updated |
+| `{"result":"duplicate"}` | this `event_id` was already received, nothing changed |
+| `{"result":"ignored"}` | a new event, but the payment is already finished, nothing changed |
+
+In step 4 the fake payment finishes straight away, so the first webhook for it comes back as
+`ignored`. Run the last line again and you get `duplicate`. The case where a webhook finishes a
+waiting payment is covered by the tests (`tests/test_webhook.py`).
+
+## Endpoints
+
+| Method | Path | Who can call it | What it does |
+|---|---|---|---|
+| POST | `/auth/signup` | anyone | create an account |
+| POST | `/auth/login` | anyone | get an access token and a refresh token |
+| POST | `/auth/refresh` | anyone with a refresh token | get a new pair of tokens |
+| POST | `/auth/logout` | logged in | invalidate all of the user's tokens |
+| GET | `/centres/` | anyone | list labs with their tests and prices (`page`, `size`, `location`) |
+| GET | `/centres/{id}` | anyone | one lab |
+| POST | `/centres/` | admin | add a lab |
+| POST | `/centres/{id}/tests` | admin | make a lab offer a test at a price |
+| PUT | `/centres/{id}/tests/{test_id}` | admin | change that price |
+| GET | `/tests/` | anyone | list tests |
+| POST | `/tests/` | admin | add a test |
+| POST | `/bookings/` | logged in | book a test |
+| GET | `/bookings/` | logged in | my bookings (`status`, `page`, `size`) |
+| GET | `/bookings/{id}` | logged in | one of my bookings |
+| POST | `/bookings/{id}/cancel` | logged in | cancel my booking |
+| POST | `/payments/` | logged in | pay for a booking (simulated) |
+| POST | `/payments/webhook/` | the payment provider | payment update, signed |
+
+## Database
 
 ```
 users ──< bookings >── diagnostic_centres ──< centre_tests >── diagnostic_tests
-             │
-             └──< payments          webhook_events (standalone)
+              │
+              └──< payments            webhook_events (separate)
 ```
 
-| Table | Important columns |
-|---|---|
-| users | email (unique), password_hash, is_admin |
-| diagnostic_centres | name, location |
-| diagnostic_tests | name (unique) |
-| centre_tests | centre_id, test_id, **price**. Unique on (centre_id, test_id) |
-| bookings | user_id, centre_id, test_id, appointment_time, **amount**, status |
-| payments | booking_id, amount, status, provider_ref (unique) |
-| webhook_events | **event_id (unique)**, payload, processed, attempts |
+- **centre_tests** holds the price, because every lab charges its own price for a test.
+- **bookings.amount** is a copy of the price taken when the booking was made, so changing a
+  price later does not change old bookings.
+- **webhook_events.event_id** is unique. That is what stops the same event being applied twice.
+- Money is stored as `Numeric(10,2)`, not as a float.
 
-Why it looks like this:
-
-- **Price is on `centre_tests`**, not on the test, because every centre charges its own price.
-- **`bookings.amount` is a copy** of the price at booking time, so changing a price later does not
-  change old bookings.
-- **`webhook_events.event_id` is unique.** That constraint is what makes the webhook idempotent.
-- Money uses `Numeric(10,2)`, never floats.
-- Indexes on the columns we filter by: `bookings.user_id`, `bookings.status`, `payments.booking_id`, `users.email`.
-
-### Booking states
+Booking status can only move like this:
 
 ```
-PENDING   -> CONFIRMED | FAILED | CANCELLED
+PENDING   -> CONFIRMED, FAILED or CANCELLED
 CONFIRMED -> CANCELLED
-FAILED, CANCELLED -> (final)
+FAILED and CANCELLED are final
 ```
 
-The allowed moves are one dict (`ALLOWED_TRANSITIONS`) in `services/booking_service.py`, and
-`change_status()` is the only function that changes a booking's status.
+The full table list and more detail are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## How the webhook stays idempotent
+## Extras included
 
-1. Verify the signature (401 if wrong).
-2. Insert the event into `webhook_events`. If `event_id` already exists the database rejects it,
-   so we know it is a repeat and change nothing.
-3. Lock the payment row (`SELECT ... FOR UPDATE`) and only update it **if it is still PENDING**.
-   A late or contradicting event can never overwrite a finished payment.
-4. Payment and booking are updated in one transaction.
-
-So there are two layers: the unique `event_id`, and the "only PENDING payments can change" check.
-`tests/test_webhook.py` includes a test that fires the same event from 6 threads at once.
-
-If processing fails (for example the payment is not known yet), the event stays stored as
-unprocessed and a Celery job retries it every minute, up to 5 attempts.
-
-## Bonus features
-
-| Feature | Where |
+| Extra | How it is used |
 |---|---|
-| Redis cache | `GET /centres/` is cached for 60s, cleared when a centre or price changes. If Redis is down the API still works. |
-| Celery | `retry_failed_webhooks` (every minute) and `expire_pending_bookings` (cancels bookings pending more than 30 min) |
-| Docker | `Dockerfile`, `docker-compose.yml` |
+| Redis cache | `GET /centres/` is cached for 60 seconds and cleared when a lab or price changes |
+| Celery | one job retries failed webhook events, another cancels bookings left PENDING for 30 minutes |
+| Webhook retry | failed events are retried up to 5 times, waiting 30s, 60s, 120s, 240s between tries |
+| Rate limiting | 5 per minute on signup and login, 20 on refresh, 100 for everything else. Counters are in Redis |
+| Logout / refresh tokens | access token lasts 15 minutes, refresh token 7 days, logout invalidates both straight away |
+| Docker | `Dockerfile` and `docker-compose.yml` (api, worker, beat, database, redis) |
 | Swagger | `/docs` |
-| Tests | `pytest`, 59 tests |
-| Structured logging | JSON logs with `booking_id`, `payment_id`, `event_id` |
-| Pagination | `page` and `size` on all list endpoints |
-| Rate limiting | 5/min on signup and login, 100/min per IP for everything else |
-| Webhook retry | described above |
+| Structured logging | JSON log lines with `booking_id`, `payment_id`, `event_id` |
+| Pagination | `page` and `size` on every list |
+| Tests | 71 tests, run on a real PostgreSQL database |
 
-## Edge cases handled
+## How errors are handled
 
-| Case | Response |
+| Situation | Answer |
 |---|---|
-| Bad JSON / missing fields / bad email / short password | 422 |
-| Missing or invalid token | 401 |
-| Normal user calling an admin endpoint | 403 |
-| Someone else's booking | 404 (same as "not found", so ids can't be guessed) |
-| Unknown booking / centre / test id | 404 |
-| Appointment in the past, or centre doesn't offer the test | 400 |
-| Duplicate signup email | 409 |
+| Wrong or missing fields, bad email, short password | 422 |
+| Missing, wrong, expired or logged-out token | 401 |
+| A normal user calls an admin endpoint | 403 |
+| Someone else's booking | 404 (same as "not found", so ids cannot be guessed) |
+| Unknown booking, lab or test id | 404 |
+| Appointment in the past, or the lab does not offer the test | 400 |
+| Email already registered | 409 |
 | Paying twice, paying a cancelled or failed booking, cancelling twice | 409 |
-| Webhook with a bad signature | 401 |
-| Same webhook event repeated | 200 `duplicate`, nothing changes |
-| Contradicting webhook after payment finished | 200 `ignored`, nothing changes |
-| Webhook for a payment we don't know | 404, event kept and retried by the job |
+| Webhook with a wrong signature | 401 |
+| Same webhook sent again | 200 `duplicate`, nothing changes |
+| New webhook for a payment that is already finished | 200 `ignored`, nothing changes |
+| Webhook for a payment we do not know | 404, the event is kept and retried later |
 
 ## Assumptions
 
-- A failed payment fails the booking straight away, and the user books again. There is one payment
-  attempt per booking.
-- Cancelling a confirmed booking is allowed. Refunds are out of scope.
-- If a payment succeeds for a booking that was cancelled meanwhile, the payment is recorded as
-  SUCCESS but the booking stays CANCELLED, and a warning is logged so it can be refunded.
-- Only admins create centres and tests. Admins are created by the seed script, never by signup.
-- Appointment times must include a timezone. All times are stored in UTC.
-- `simulate` on `POST /payments/` exists only so the fake provider can be forced in demos and tests.
+- A failed payment makes the booking FAILED right away, and the user books again.
+- Cancelling a confirmed booking is allowed. Refunds are not handled.
+- If a payment succeeds for a booking that was cancelled in the meantime, the payment is saved as
+  SUCCESS, the booking stays CANCELLED, and a warning is logged so it can be refunded.
+- Only admins can create labs and tests. Admins come from the seed script, never from signup.
+- Appointment times must include a timezone and are stored in UTC.
+- Logout logs the user out everywhere (all devices), not just one.
+- The `simulate` field on `POST /payments/` exists only so the fake provider can be forced to a
+  result in demos and tests.
 
-## What I would improve with more time
+## What I would do with more time
 
-- Real slot management: opening hours, capacity per slot, no double booking of the same slot.
-- Refresh tokens and logout. Right now a JWT is valid until it expires.
-- Retry with exponential backoff (right now it is a fixed one minute), and a dead-letter view for
-  events that gave up.
-- Rate limit storage in Redis, so limits are shared if the API runs as several containers.
-- A payments history endpoint, and refunds for cancelled paid bookings.
-- Include the `X-Signature` timestamp in the signed data to stop replay of old webhooks.
-- CI pipeline that runs the tests on every push.
+- Slots: opening hours and capacity, so two people cannot take the same slot at a lab.
+- Log out of a single device instead of all devices.
+- Refunds, and a payment history endpoint.
+- Sign a timestamp together with the webhook body, so an old webhook cannot be replayed.
+- A CI workflow that runs the tests on every push.
