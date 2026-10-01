@@ -6,7 +6,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     secret_key: str = "dev-secret-change-me-please-use-a-long-key"
-    access_token_expire_minutes: int = 60
+    access_token_expire_minutes: int = 15
+    refresh_token_expire_days: int = 7
 
     # shared secret used to sign webhook bodies
     webhook_secret: str = "dev-webhook-secret"
